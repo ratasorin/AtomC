@@ -1,0 +1,1 @@
+error: Invalid DOUBLE syntax: Missing exponent digits at line 1

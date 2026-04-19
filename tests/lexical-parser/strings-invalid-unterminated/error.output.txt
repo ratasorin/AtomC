@@ -1,0 +1,1 @@
+error: Invalid STRING syntax: Atom C doesn't allow newlines inside strings at line 1

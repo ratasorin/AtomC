@@ -1,0 +1,1 @@
+error: Invalid DOUBLE syntax: Missing digits after decimal point at line 1
