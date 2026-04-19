@@ -2,32 +2,41 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <stdbool.h>
+#include "ad.h"
 #include "parser.h"
+#include "utils.h"
 
 /**
  Position reached in the list: `tokens` extracted by `lexer.c`
 
  If the program's syntax is correct, `current_tok` should advance to END
 
- Example of failure point:
+ Example of failure point inside an `ifExpression` function:
 ```
 	tokens: [ IF ] → [ L_PARENTHESIS ] → [ EXPR ] → [ R_BRACKET ] → ... → END
 
 	current_tok: [ IF ]
-	ifExpression() → consume(IF_CODE) = true
+	ifExpression() @ consume(IF_CODE) = true
 
 	current_tok: [ L_PARENTHESIS ]
-	ifExpression() → consume(L_PARENTHESIS_CODE) = true
+	ifExpression() @ consume(L_PARENTHESIS_CODE) = true
 
 	current_tok: [ EXPR ]
-	ifExpression() → consume(EXPR_CODE) = true
+	ifExpression() @ consume(EXPR_CODE) = true
 
 	current_tok: [ R_BRACKET ]
-	ifExpression() → consume(R_PARENTHESIS_CODE) = false → Error
+	ifExpression() @ consume(R_PARENTHESIS_CODE) = false → Error
 ```
  */
 Token *current_tok;
 Token *last_consumed_tok; // the last consumed token
+
+/**
+  - structDef() sets `owner = s` after creating a struct symbol.
+  - functionDef() sets `owner = fn`after creating a function symbol.
+  - They both clear it back to `NULL` when leaving that declaration.
+ */
+Symbol *owner = NULL;
 
 void parseErr(const char *fmt, ...)
 {
@@ -86,95 +95,138 @@ bool consume(int code)
 
 /*
 	Behavior:
-		- Accepts primitive types: int, double, char
-		- Accepts struct types only if followed by an identifier (e.g., struct Point)
+		- Accepts primitive types and defined struct types
 
 	Grammar rule:
 ```
 	[typeBase] := [TYPE_INT] | [TYPE_DOUBLE] | [TYPE_CHAR] | [STRUCT] [ID]
 ```
 */
-bool typeBase()
+bool typeBase(Type *t)
 {
-	Token *start = current_tok;
+	t->arrsize = -1;
+	t->sym = NULL;
 
 	if (consume(TYPE_INT))
 	{
+		t->base = TB_INT;
 		return true;
 	}
 	if (consume(TYPE_DOUBLE))
 	{
+		t->base = TB_DOUBLE;
 		return true;
 	}
 	if (consume(TYPE_CHAR))
 	{
+		t->base = TB_CHAR;
 		return true;
 	}
 	if (consume(STRUCT))
 	{
 		if (consume(ID))
 		{
+			Token *tkName = last_consumed_tok;
+			t->base = TB_STRUCT;
+			t->sym = findSymbol(tkName->text);
+			if (!t->sym || t->sym->kind != SK_STRUCT)
+				parseErr("Undefined structure: %s", tkName->text);
 			return true;
 		}
-		parseErr("missing identifier after `struct`");
+		parseErr("Missing identifier after `struct`");
 	}
-
-	current_tok = start;
 	return false;
 }
 
 /*
 	Grammar rule:
 ```
-	[arrayDecl] := [L_BRACKET] [INT]? [R_BRACKET]
+	[arrayDecl[inout Type *t]] := [L_BRACKET] [INT]? [R_BRACKET]
 ```
 */
-bool arrayDecl()
+bool arrayDecl(Type *t)
 {
-	Token *start = current_tok;
 	if (consume(L_BRACKET))
 	{
-		consume(INT);
+		if (consume(INT))
+		{
+			Token *tkSize = last_consumed_tok;
+			t->arrsize = tkSize->i;
+		}
+		else
+		{
+			t->arrsize = 0;
+		}
 		if (consume(R_BRACKET))
 		{
 			return true;
 		}
-		parseErr("missing `]` in array declaration");
+		parseErr("missing ] or invalid expression inside [...]");
 	}
-	current_tok = start;
 	return false;
 }
 
 /*
 	Grammar rule:
 ```
-	[varDef] := [typeBase] [ID] [arrayDecl]? [SEMICOLON]
+		[varDef] := {Type t;} [typeBase[&t]] [ID[tkName]] ( [arrayDecl[&t]] )? [SEMICOLON]
 ```
 */
 bool variableDef()
 {
-	Token *start = current_tok;
-	if (typeBase())
+	Type t;
+	if (typeBase(&t))
 	{
 		if (consume(ID))
 		{
-			arrayDecl();
+			Token *tkName = last_consumed_tok;
+			if (arrayDecl(&t))
+			{
+				if (t.arrsize == 0)
+					parseErr("a vector variable must have a specified dimension");
+			}
 			if (consume(SEMICOLON))
 			{
+				Symbol *var = findSymbolInDomain(currentDomain, tkName->text);
+				if (var)
+					parseErr("symbol redefinition: %s", tkName->text);
+				var = newSymbol(tkName->text, SK_VAR);
+				var->type = t;
+				var->owner = owner;
+				addSymbolToDomain(currentDomain, var);
+				if (owner)
+				{
+					switch (owner->kind)
+					{
+					case SK_FN:
+						var->varIdx = symbolsLen(owner->fn.locals);
+						addSymbolToList(&owner->fn.locals, dupSymbol(var));
+						break;
+					case SK_STRUCT:
+						var->varIdx = typeSize(&owner->type);
+						addSymbolToList(&owner->structMembers, dupSymbol(var));
+						break;
+					default:
+						break;
+					}
+				}
+				else
+				{
+					var->varMem = safeAlloc(typeSize(&t));
+				}
 				return true;
 			}
 			parseErr("missing `;` after variable declaration");
 		}
 		parseErr("missing identifier in variable declaration");
 	}
-	current_tok = start;
 	return false;
 }
 
 /*
 	Grammar rule:
 ```
-	[structDef] := [STRUCT] [ID] [L_ACCOLADE] [varDef]* [R_ACCOLADE] [SEMICOLON]
+	[structDef] := [STRUCT] [ID[tkName]] [L_ACCOLADE] [varDef]* [R_ACCOLADE] [SEMICOLON]
 ```
 */
 bool structDef()
@@ -184,11 +236,21 @@ bool structDef()
 	{
 		if (!consume(ID))
 			parseErr("missing struct name");
+		Token *tkName = last_consumed_tok;
 		if (!consume(L_ACCOLADE))
 		{
 			current_tok = start;
 			return false;
 		}
+		Symbol *s = findSymbolInDomain(currentDomain, tkName->text);
+		if (s)
+			parseErr("symbol redefinition: %s", tkName->text);
+		s = addSymbolToDomain(currentDomain, newSymbol(tkName->text, SK_STRUCT));
+		s->type.base = TB_STRUCT;
+		s->type.sym = s;
+		s->type.arrsize = -1;
+		pushDomain();
+		owner = s;
 
 		while (variableDef())
 		{
@@ -198,6 +260,8 @@ bool structDef()
 			parseErr("missing `}` at end of struct declaration");
 		if (!consume(SEMICOLON))
 			parseErr("missing `;` after struct declaration");
+		owner = NULL;
+		dropDomain();
 		return true;
 	}
 	current_tok = start;
@@ -207,47 +271,81 @@ bool structDef()
 /*
 	Grammar rule:
 ```
-	[fnParam] := [typeBase] [ID] [arrayDecl]?
+	[fnParam] := {Type t;} [typeBase[&t]] [ID[tkName]] ( [arrayDecl[&t]] {t.arrsize = 0;} )?
 ```
 */
 bool fnParam()
 {
-	Token *start = current_tok;
-	if (typeBase())
+	Type t;
+	if (typeBase(&t))
 	{
 		if (consume(ID))
 		{
-			arrayDecl();
+			Token *tkName = last_consumed_tok;
+			if (arrayDecl(&t))
+				t.arrsize = 0;
+			Symbol *param = findSymbolInDomain(currentDomain, tkName->text);
+			if (param)
+				parseErr("symbol redefinition: %s", tkName->text);
+			param = newSymbol(tkName->text, SK_PARAM);
+			param->type = t;
+			param->owner = owner;
+			param->paramIdx = symbolsLen(owner->fn.params);
+			addSymbolToDomain(currentDomain, param);
+			addSymbolToList(&owner->fn.params, dupSymbol(param));
 			return true;
 		}
 		parseErr("missing parameter name");
 	}
-	current_tok = start;
 	return false;
 }
 
 /*
 	Grammar rule:
 ```
-	[fnDef] := ( [typeBase] | [VOID] ) [ID]
-			 [L_PARENTHESES] ( [fnParam] ( [COMMA] [fnParam] )* )? [R_PARENTHESES]
-			 [stmCompound]
+	[fnDef] := {Type t;}
+				( [typeBase[&t]] | [VOID] {t.base = TB_VOID; t.sym = NULL; t.arrsize = -1;} )
+				[ID[tkName]]
+				[L_PARENTHESES]
+				( [fnParam] ( [COMMA] [fnParam] )* )? [R_PARENTHESES]
+				[stmCompound[false]]
 ```
 */
 bool functionDef()
 {
 	Token *start = current_tok;
-	if (typeBase() || consume(VOID))
+	Type t;
+	bool isVoid = false;
+	if (typeBase(&t) || (isVoid = consume(VOID)))
 	{
+		// Treat `void` in a special way because it is not a regular type for standard variables: TYPE_INT | TYPE_CHAR | TYPE_DOUBLE | STRUCT
+		if (isVoid)
+		{
+			t.base = TB_VOID;
+			t.sym = NULL;
+			t.arrsize = -1;
+		}
+
 		if (!consume(ID))
 			parseErr("missing function name");
+		Token *tkName = last_consumed_tok;
 
-		// Keep varDef/fnDef disambiguation: if there is no `(`, this is not fnDef.
+		// [varDef]/[fnDef] disambiguation: if there is no `(`, this is not [fnDef].
 		if (!consume(L_PARENTHESES))
 		{
+			// "All Or Nothing" policy: This is not a [fnDef], revert so we can find the [varDef]
 			current_tok = start;
 			return false;
 		}
+
+		Symbol *fn = findSymbolInDomain(currentDomain, tkName->text);
+		if (fn)
+			parseErr("Symbol redefinition: %s", tkName->text);
+		fn = newSymbol(tkName->text, SK_FN);
+		fn->type = t;
+		addSymbolToDomain(currentDomain, fn);
+		owner = fn;
+		pushDomain();
 
 		if (fnParam())
 		{
@@ -260,8 +358,10 @@ bool functionDef()
 
 		if (!consume(R_PARENTHESES))
 			parseErr("missing `)` after function parameters");
-		if (!stmCompound())
+		if (!stmCompound(false))
 			parseErr("missing function body");
+		dropDomain();
+		owner = NULL;
 		return true;
 	}
 	current_tok = start;
@@ -281,7 +381,7 @@ bool functionDef()
 bool stm()
 {
 	Token *start = current_tok;
-	if (stmCompound())
+	if (stmCompound(true))
 		return true;
 
 	current_tok = start;
@@ -338,14 +438,16 @@ bool stm()
 /*
 	Grammar rule:
 ```
-	[stmCompound] := [L_ACCOLADE] ( [varDef] | [stm] )* [R_ACCOLADE]
+	[stmCompound[in bool newDomain]] := [L_ACCOLADE] ( [varDef] | [stm] )* [R_ACCOLADE]
 ```
 */
-bool stmCompound()
+bool stmCompound(bool newDomain)
 {
 	Token *start = current_tok;
 	if (consume(L_ACCOLADE))
 	{
+		if (newDomain)
+			pushDomain();
 		while (true)
 		{
 			if (variableDef())
@@ -359,6 +461,8 @@ bool stmCompound()
 		}
 		if (!consume(R_ACCOLADE))
 			parseErr("missing `}` at end of block");
+		if (newDomain)
+			dropDomain();
 		return true;
 	}
 	current_tok = start;
@@ -567,7 +671,7 @@ static bool exprMulRest()
 /*
 	Grammar rule:
 ```
-	[exprCast] := [L_PARENTHESES] [typeBase] [arrayDecl]? [R_PARENTHESES] [exprCast] | [exprUnary]
+	[exprCast] := [L_PARENTHESES] {Type t;} [typeBase] [arrayDecl]? [R_PARENTHESES] [exprCast] | [exprUnary]
 ```
 */
 bool exprCast()
@@ -575,9 +679,10 @@ bool exprCast()
 	Token *start = current_tok;
 	if (consume(L_PARENTHESES))
 	{
-		if (typeBase())
+		Type t;
+		if (typeBase(&t))
 		{
-			arrayDecl();
+			arrayDecl(&t);
 			if (!consume(R_PARENTHESES))
 				parseErr("missing `)` in cast expression");
 			if (!exprCast())

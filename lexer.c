@@ -487,6 +487,7 @@ Token *tokenize(const char *pch)
 		{
 			Token *tk = addTk(ID);
 			tk->source_text = extract(pch, pch + len);
+			tk->text = tk->source_text;
 			// len = identifier length
 			pch += len;
 			continue;

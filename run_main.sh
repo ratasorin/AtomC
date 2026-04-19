@@ -14,7 +14,7 @@ fi
 
 OUTPUT_BIN="./main.out"
 
-gcc -std=c11 -Wall -Wextra -o "$OUTPUT_BIN" \
-	main.c lexer.c utils.c parser.c
+gcc -std=c11 -Wall -g -O0 -Wextra -o "$OUTPUT_BIN" \
+	main.c lexer.c utils.c parser.c ad.c
 
 "$OUTPUT_BIN" "$INPUT_FILE"

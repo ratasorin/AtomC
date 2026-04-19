@@ -1,4 +1,5 @@
 #pragma once
+#include "ad.h"
 #include "lexer.h"
 #include "stdbool.h"
 
@@ -6,10 +7,11 @@ void parse(Token *tokens);
 bool structDef();
 bool functionDef();
 bool variableDef();
-bool arrayDecl();
+bool typeBase(Type *t);
+bool arrayDecl(Type *t);
 bool fnParam();
 bool stm();
-bool stmCompound();
+bool stmCompound(bool newDomain);
 bool expr();
 bool exprAssign();
 bool exprOr();

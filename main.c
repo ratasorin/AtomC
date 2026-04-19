@@ -12,7 +12,10 @@ int main(int argc, char *argv[])
 
     char *text = loadFile(argv[1]);
     Token *tokens = tokenize(text);
+    pushDomain();
     parse(tokens);
+    showDomain(currentDomain, "global");
+    dropDomain();
 
     return 0;
 }
