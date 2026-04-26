@@ -2,9 +2,8 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
-
 #include "utils.h"
-#include "ad.h"
+#include "domain.h"
 
 Domain *currentDomain = NULL;
 

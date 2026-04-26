@@ -2,7 +2,8 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <stdbool.h>
-#include "ad.h"
+#include "domain.h"
+#include "types.h"
 #include "parser.h"
 #include "utils.h"
 
@@ -38,6 +39,22 @@ Token *last_consumed_tok; // the last consumed token
  */
 Symbol *owner = NULL;
 
+static Return makeRet(Type type, bool lval, bool ct)
+{
+	Return r;
+	r.type = type;
+	r.lval = lval;
+	r.ct = ct;
+	return r;
+}
+
+static bool canCastForCastExpr(Type *src, Type *dst)
+{
+	if (src->base == TB_STRUCT || dst->base == TB_STRUCT)
+		return false;
+	return canCast(src, dst);
+}
+
 void parseErr(const char *fmt, ...)
 {
 	int line = 0;
@@ -54,6 +71,83 @@ void parseErr(const char *fmt, ...)
 	fprintf(stderr, "\n");
 	exit(EXIT_FAILURE);
 }
+
+static const char *tokenText(int code)
+{
+	switch (code)
+	{
+	case COMMA:
+		return ",";
+	case SEMICOLON:
+		return ";";
+	case L_PARENTHESES:
+		return "(";
+	case R_PARENTHESES:
+		return ")";
+	case L_BRACKET:
+		return "[";
+	case R_BRACKET:
+		return "]";
+	case L_ACCOLADE:
+		return "{";
+	case R_ACCOLADE:
+		return "}";
+	case DOT:
+		return ".";
+	case IF:
+		return "if";
+	case ELSE:
+		return "else";
+	case WHILE:
+		return "while";
+	case RETURN:
+		return "return";
+	case STRUCT:
+		return "struct";
+	case ASSIGN:
+		return "=";
+	case OR:
+		return "||";
+	case AND:
+		return "&&";
+	case EQUAL:
+		return "==";
+	case NOT_EQ:
+		return "!=";
+	case LESS:
+		return "<";
+	case LESS_EQ:
+		return "<=";
+	case GREATER:
+		return ">";
+	case GREATER_EQ:
+		return ">=";
+	case ADD:
+		return "+";
+	case SUB:
+		return "-";
+	case MUL:
+		return "*";
+	case DIV:
+		return "/";
+	case NOT:
+		return "!";
+	default:
+		return "token";
+	}
+}
+
+static void parseErrMissingAfterToken(int missingCode, int afterCode)
+{
+	parseErr("missing `%s` after `%s`", tokenText(missingCode), tokenText(afterCode));
+}
+
+static void parseErrMissingName(const char *kind)
+{
+	parseErr("missing %s name", kind);
+}
+
+static bool exprAssignR(Return *r);
 
 /**
 	Used by various checkers: `ifExpression`, `funcDefinition`, `structDefinition` to iteratively validate their
@@ -130,10 +224,10 @@ bool typeBase(Type *t)
 			t->base = TB_STRUCT;
 			t->sym = findSymbol(tkName->text);
 			if (!t->sym || t->sym->kind != SK_STRUCT)
-				parseErr("Undefined structure: %s", tkName->text);
+				parseErr("undefined structure: %s", tkName->text);
 			return true;
 		}
-		parseErr("Missing identifier after `struct`");
+		parseErrMissingName("struct");
 	}
 	return false;
 }
@@ -161,7 +255,7 @@ bool arrayDecl(Type *t)
 		{
 			return true;
 		}
-		parseErr("missing ] or invalid expression inside [...]");
+		parseErr("missing `%s` after array size", tokenText(R_BRACKET));
 	}
 	return false;
 }
@@ -183,7 +277,7 @@ bool variableDef()
 			if (arrayDecl(&t))
 			{
 				if (t.arrsize == 0)
-					parseErr("a vector variable must have a specified dimension");
+					parseErr("array variable declarations need an explicit size");
 			}
 			if (consume(SEMICOLON))
 			{
@@ -216,9 +310,9 @@ bool variableDef()
 				}
 				return true;
 			}
-			parseErr("missing `;` after variable declaration");
+			parseErr("missing `%s` after variable declaration", tokenText(SEMICOLON));
 		}
-		parseErr("missing identifier in variable declaration");
+		parseErrMissingName("variable");
 	}
 	return false;
 }
@@ -235,9 +329,12 @@ bool structDef()
 	if (consume(STRUCT))
 	{
 		if (!consume(ID))
-			parseErr("missing struct name");
+			parseErrMissingName("struct");
 		Token *tkName = last_consumed_tok;
-		if (!consume(L_ACCOLADE))
+		if (consume(L_ACCOLADE))
+		{
+		}
+		else
 		{
 			current_tok = start;
 			return false;
@@ -257,9 +354,9 @@ bool structDef()
 		}
 
 		if (!consume(R_ACCOLADE))
-			parseErr("missing `}` at end of struct declaration");
+			parseErr("missing `%s` at end of struct declaration", tokenText(R_ACCOLADE));
 		if (!consume(SEMICOLON))
-			parseErr("missing `;` after struct declaration");
+			parseErr("missing `%s` after struct declaration", tokenText(SEMICOLON));
 		owner = NULL;
 		dropDomain();
 		return true;
@@ -295,7 +392,7 @@ bool fnParam()
 			addSymbolToList(&owner->fn.params, dupSymbol(param));
 			return true;
 		}
-		parseErr("missing parameter name");
+		parseErrMissingName("parameter");
 	}
 	return false;
 }
@@ -327,7 +424,7 @@ bool functionDef()
 		}
 
 		if (!consume(ID))
-			parseErr("missing function name");
+			parseErrMissingName("function");
 		Token *tkName = last_consumed_tok;
 
 		// [varDef]/[fnDef] disambiguation: if there is no `(`, this is not [fnDef].
@@ -340,7 +437,7 @@ bool functionDef()
 
 		Symbol *fn = findSymbolInDomain(currentDomain, tkName->text);
 		if (fn)
-			parseErr("Symbol redefinition: %s", tkName->text);
+			parseErr("symbol redefinition: %s", tkName->text);
 		fn = newSymbol(tkName->text, SK_FN);
 		fn->type = t;
 		addSymbolToDomain(currentDomain, fn);
@@ -352,14 +449,14 @@ bool functionDef()
 			while (consume(COMMA))
 			{
 				if (!fnParam())
-					parseErr("missing parameter after `,`");
+					parseErr("missing/invalid parameter after `%s`", tokenText(COMMA));
 			}
 		}
 
 		if (!consume(R_PARENTHESES))
-			parseErr("missing `)` after function parameters");
+			parseErr("missing `%s` after function parameters", tokenText(R_PARENTHESES));
 		if (!stmCompound(false))
-			parseErr("missing function body");
+			parseErr("missing function body after parameter list");
 		dropDomain();
 		owner = NULL;
 		return true;
@@ -388,17 +485,20 @@ bool stm()
 	if (consume(IF))
 	{
 		if (!consume(L_PARENTHESES))
-			parseErr("missing `(` after `if`");
-		if (!expr())
-			parseErr("missing/invalid condition in `if`");
+			parseErrMissingAfterToken(L_PARENTHESES, IF);
+		Return rCond;
+		if (!exprAssignR(&rCond))
+			parseErr("missing or invalid condition after `%s`", tokenText(IF));
+		if (!canBeScalar(&rCond))
+			parseErr("the if condition must be a scalar value");
 		if (!consume(R_PARENTHESES))
-			parseErr("missing `)` after `if` condition");
+			parseErr("missing `%s` after `if` condition", tokenText(R_PARENTHESES));
 		if (!stm())
-			parseErr("missing statement after `if`");
+			parseErr("missing statement after `%s`", tokenText(IF));
 		if (consume(ELSE))
 		{
 			if (!stm())
-				parseErr("missing statement after `else`");
+				parseErr("missing statement after `%s`", tokenText(ELSE));
 		}
 		return true;
 	}
@@ -407,27 +507,48 @@ bool stm()
 	if (consume(WHILE))
 	{
 		if (!consume(L_PARENTHESES))
-			parseErr("missing `(` after `while`");
-		if (!expr())
-			parseErr("missing/invalid condition in `while`");
+			parseErrMissingAfterToken(L_PARENTHESES, WHILE);
+		Return rCond;
+		if (!exprAssignR(&rCond))
+			parseErr("missing or invalid condition after `%s`", tokenText(WHILE));
+		if (!canBeScalar(&rCond))
+			parseErr("the while condition must be a scalar value");
 		if (!consume(R_PARENTHESES))
-			parseErr("missing `)` after `while` condition");
+			parseErr("missing `%s` after `while` condition", tokenText(R_PARENTHESES));
 		if (!stm())
-			parseErr("missing statement after `while`");
+			parseErr("missing statement after `%s`", tokenText(WHILE));
 		return true;
 	}
 
 	current_tok = start;
 	if (consume(RETURN))
 	{
-		expr();
+		if (consume(SEMICOLON))
+		{
+			if (owner->type.base != TB_VOID)
+				parseErr("a non-void function must return a value");
+			return true;
+		}
+
+		Return rExpr;
+		if (!exprAssignR(&rExpr))
+			parseErr("missing expression after `%s`", tokenText(RETURN));
+		if (owner->type.base == TB_VOID)
+			parseErr("a void function cannot return a value");
+		if (!canBeScalar(&rExpr))
+			parseErr("the return value must be a scalar value");
+		if (!canCast(&rExpr.type, &owner->type))
+			parseErr("cannot convert the return expression type to the function return type");
 		if (!consume(SEMICOLON))
-			parseErr("missing `;` after `return`");
+			parseErrMissingAfterToken(SEMICOLON, RETURN);
 		return true;
 	}
 
 	current_tok = start;
-	expr();
+	{
+		Return rExpr;
+		exprAssignR(&rExpr);
+	}
 	if (consume(SEMICOLON))
 		return true;
 
@@ -460,7 +581,7 @@ bool stmCompound(bool newDomain)
 				break;
 		}
 		if (!consume(R_ACCOLADE))
-			parseErr("missing `}` at end of block");
+			parseErr("missing `%s` at end of block", tokenText(R_ACCOLADE));
 		if (newDomain)
 			dropDomain();
 		return true;
@@ -470,17 +591,29 @@ bool stmCompound(bool newDomain)
 }
 
 // Internal helpers for the left-recursion eliminated expression rules.
-static bool exprOrRest(void);
-static bool exprAndRest(void);
-static bool exprEqRest(void);
-static bool exprRelRest(void);
-static bool exprAddRest(void);
-static bool exprMulRest(void);
-static bool exprPostfixRest(void);
+static bool exprAssignR(Return *r);
+static bool exprOrR(Return *r);
+static bool exprOrRestR(Return *r);
+static bool exprAndR(Return *r);
+static bool exprAndRestR(Return *r);
+static bool exprEqR(Return *r);
+static bool exprEqRestR(Return *r);
+static bool exprRelR(Return *r);
+static bool exprRelRestR(Return *r);
+static bool exprAddR(Return *r);
+static bool exprAddRestR(Return *r);
+static bool exprMulR(Return *r);
+static bool exprMulRestR(Return *r);
+static bool exprCastR(Return *r);
+static bool exprUnaryR(Return *r);
+static bool exprPostfixR(Return *r);
+static bool exprPostfixRestR(Return *r);
+static bool exprPrimaryR(Return *r);
 
 bool expr()
 {
-	return exprAssign();
+	Return r;
+	return exprAssignR(&r);
 }
 
 /*
@@ -491,19 +624,8 @@ bool expr()
 */
 bool exprAssign()
 {
-	Token *start = current_tok;
-	if (exprUnary())
-	{
-		if (consume(ASSIGN))
-		{
-			if (exprAssign())
-				return true;
-			parseErr("missing expression after assignment `=`");
-		}
-	}
-
-	current_tok = start;
-	return exprOr();
+	Return r;
+	return exprAssignR(&r);
 }
 
 /*
@@ -517,18 +639,30 @@ bool exprAssign()
 */
 bool exprOr()
 {
-	if (!exprAnd())
-		return false;
-	return exprOrRest();
+	Return r;
+	return exprOrR(&r);
 }
 
-static bool exprOrRest()
+static bool exprOrR(Return *r)
+{
+	if (!exprAndR(r))
+		return false;
+	return exprOrRestR(r);
+}
+
+static bool exprOrRestR(Return *r)
 {
 	if (consume(OR))
 	{
-		if (!exprAnd())
-			parseErr("missing expression after `||`");
-		return exprOrRest();
+		int op = last_consumed_tok->code;
+		Return right;
+		if (!exprAndR(&right))
+			parseErr("missing expression after `%s`", tokenText(op));
+		Type tDst;
+		if (!arithmeticCast(&r->type, &right.type, &tDst))
+			parseErr("invalid operand type for ||");
+		*r = makeRet((Type){TB_INT, NULL, -1}, false, true);
+		return exprOrRestR(r);
 	}
 	return true;
 }
@@ -544,18 +678,30 @@ static bool exprOrRest()
 */
 bool exprAnd()
 {
-	if (!exprEq())
-		return false;
-	return exprAndRest();
+	Return r;
+	return exprAndR(&r);
 }
 
-static bool exprAndRest()
+static bool exprAndR(Return *r)
+{
+	if (!exprEqR(r))
+		return false;
+	return exprAndRestR(r);
+}
+
+static bool exprAndRestR(Return *r)
 {
 	if (consume(AND))
 	{
-		if (!exprEq())
-			parseErr("missing expression after `&&`");
-		return exprAndRest();
+		int op = last_consumed_tok->code;
+		Return right;
+		if (!exprEqR(&right))
+			parseErr("missing expression after `%s`", tokenText(op));
+		Type tDst;
+		if (!arithmeticCast(&r->type, &right.type, &tDst))
+			parseErr("invalid operand type for &&");
+		*r = makeRet((Type){TB_INT, NULL, -1}, false, true);
+		return exprAndRestR(r);
 	}
 	return true;
 }
@@ -571,18 +717,30 @@ static bool exprAndRest()
 */
 bool exprEq()
 {
-	if (!exprRel())
-		return false;
-	return exprEqRest();
+	Return r;
+	return exprEqR(&r);
 }
 
-static bool exprEqRest()
+static bool exprEqR(Return *r)
+{
+	if (!exprRelR(r))
+		return false;
+	return exprEqRestR(r);
+}
+
+static bool exprEqRestR(Return *r)
 {
 	if (consume(EQUAL) || consume(NOT_EQ))
 	{
-		if (!exprRel())
-			parseErr("missing expression after equality operator");
-		return exprEqRest();
+		int op = last_consumed_tok->code;
+		Return right;
+		if (!exprRelR(&right))
+			parseErr("missing expression after `%s`", tokenText(op));
+		Type tDst;
+		if (!arithmeticCast(&r->type, &right.type, &tDst))
+			parseErr("invalid operand type for == or !=");
+		*r = makeRet((Type){TB_INT, NULL, -1}, false, true);
+		return exprEqRestR(r);
 	}
 	return true;
 }
@@ -598,18 +756,30 @@ static bool exprEqRest()
 */
 bool exprRel()
 {
-	if (!exprAdd())
-		return false;
-	return exprRelRest();
+	Return r;
+	return exprRelR(&r);
 }
 
-static bool exprRelRest()
+static bool exprRelR(Return *r)
+{
+	if (!exprAddR(r))
+		return false;
+	return exprRelRestR(r);
+}
+
+static bool exprRelRestR(Return *r)
 {
 	if (consume(LESS) || consume(LESS_EQ) || consume(GREATER) || consume(GREATER_EQ))
 	{
-		if (!exprAdd())
-			parseErr("missing expression after relational operator");
-		return exprRelRest();
+		int op = last_consumed_tok->code;
+		Return right;
+		if (!exprAddR(&right))
+			parseErr("missing expression after `%s`", tokenText(op));
+		Type tDst;
+		if (!arithmeticCast(&r->type, &right.type, &tDst))
+			parseErr("invalid operand type for <, <=, >, >=");
+		*r = makeRet((Type){TB_INT, NULL, -1}, false, true);
+		return exprRelRestR(r);
 	}
 	return true;
 }
@@ -625,18 +795,30 @@ static bool exprRelRest()
 */
 bool exprAdd()
 {
-	if (!exprMul())
-		return false;
-	return exprAddRest();
+	Return r;
+	return exprAddR(&r);
 }
 
-static bool exprAddRest()
+static bool exprAddR(Return *r)
+{
+	if (!exprMulR(r))
+		return false;
+	return exprAddRestR(r);
+}
+
+static bool exprAddRestR(Return *r)
 {
 	if (consume(ADD) || consume(SUB))
 	{
-		if (!exprMul())
-			parseErr("missing expression after additive operator");
-		return exprAddRest();
+		int op = last_consumed_tok->code;
+		Return right;
+		if (!exprMulR(&right))
+			parseErr("missing expression after `%s`", tokenText(op));
+		Type tDst;
+		if (!arithmeticCast(&r->type, &right.type, &tDst))
+			parseErr("invalid operand type for + or -");
+		*r = makeRet(tDst, false, true);
+		return exprAddRestR(r);
 	}
 	return true;
 }
@@ -652,18 +834,30 @@ static bool exprAddRest()
 */
 bool exprMul()
 {
-	if (!exprCast())
-		return false;
-	return exprMulRest();
+	Return r;
+	return exprMulR(&r);
 }
 
-static bool exprMulRest()
+static bool exprMulR(Return *r)
+{
+	if (!exprCastR(r))
+		return false;
+	return exprMulRestR(r);
+}
+
+static bool exprMulRestR(Return *r)
 {
 	if (consume(MUL) || consume(DIV))
 	{
-		if (!exprCast())
-			parseErr("missing expression after multiplicative operator");
-		return exprMulRest();
+		int op = last_consumed_tok->code;
+		Return right;
+		if (!exprCastR(&right))
+			parseErr("missing expression after `%s`", tokenText(op));
+		Type tDst;
+		if (!arithmeticCast(&r->type, &right.type, &tDst))
+			parseErr("invalid operand type for * or /");
+		*r = makeRet(tDst, false, true);
+		return exprMulRestR(r);
 	}
 	return true;
 }
@@ -676,6 +870,12 @@ static bool exprMulRest()
 */
 bool exprCast()
 {
+	Return r;
+	return exprCastR(&r);
+}
+
+static bool exprCastR(Return *r)
+{
 	Token *start = current_tok;
 	if (consume(L_PARENTHESES))
 	{
@@ -684,15 +884,27 @@ bool exprCast()
 		{
 			arrayDecl(&t);
 			if (!consume(R_PARENTHESES))
-				parseErr("missing `)` in cast expression");
-			if (!exprCast())
-				parseErr("missing expression after cast");
+				parseErr("missing `%s` in cast expression", tokenText(R_PARENTHESES));
+			Return op;
+			if (!exprCastR(&op))
+				parseErr("missing expression after cast type");
+			if (op.type.base == TB_STRUCT)
+				parseErr("cannot convert a struct");
+			if (t.base == TB_STRUCT)
+				parseErr("cannot convert to a struct type");
+			if (op.type.arrsize >= 0 && t.arrsize < 0)
+				parseErr("an array can be converted only to another array");
+			if (op.type.arrsize < 0 && t.arrsize >= 0)
+				parseErr("a scalar can be converted only to another scalar");
+			if (!canCastForCastExpr(&op.type, &t))
+				parseErr("invalid cast");
+			*r = makeRet(t, false, true);
 			return true;
 		}
 	}
 
 	current_tok = start;
-	return exprUnary();
+	return exprUnaryR(r);
 }
 
 /*
@@ -703,16 +915,31 @@ bool exprCast()
 */
 bool exprUnary()
 {
+	Return r;
+	return exprUnaryR(&r);
+}
+
+static bool exprUnaryR(Return *r)
+{
 	Token *start = current_tok;
 	if (consume(SUB) || consume(NOT))
 	{
-		if (!exprUnary())
-			parseErr("missing unary expression");
+		int op = last_consumed_tok->code;
+		Return operand;
+		if (!exprUnaryR(&operand))
+			parseErr("missing unary expression after `%s`", tokenText(op));
+		if (!canBeScalar(&operand))
+			parseErr("unary - or ! must have a scalar operand");
+		*r = operand;
+		r->lval = false;
+		r->ct = true;
+		if (op == NOT)
+			r->type = (Type){TB_INT, NULL, -1};
 		return true;
 	}
 
 	current_tok = start;
-	return exprPostfix();
+	return exprPostfixR(r);
 }
 
 /*
@@ -728,26 +955,48 @@ bool exprUnary()
 */
 bool exprPostfix()
 {
-	if (!exprPrimary())
-		return false;
-	return exprPostfixRest();
+	Return r;
+	return exprPostfixR(&r);
 }
 
-static bool exprPostfixRest()
+static bool exprPostfixR(Return *r)
+{
+	if (!exprPrimaryR(r))
+		return false;
+	return exprPostfixRestR(r);
+}
+
+static bool exprPostfixRestR(Return *r)
 {
 	if (consume(L_BRACKET))
 	{
-		if (!expr())
-			parseErr("missing index expression inside `[]`");
+		Return idx;
+		if (!exprAssignR(&idx))
+			parseErr("missing index expression after `%s`", tokenText(L_BRACKET));
 		if (!consume(R_BRACKET))
-			parseErr("missing `]` after index expression");
-		return exprPostfixRest();
+			parseErr("missing `%s` after index expression", tokenText(R_BRACKET));
+		if (r->type.arrsize < 0)
+			parseErr("only an array can be indexed");
+		Type tInt = {TB_INT, NULL, -1};
+		if (!canCast(&idx.type, &tInt))
+			parseErr("the index is not convertible to int");
+		r->type.arrsize = -1;
+		r->lval = true;
+		r->ct = false;
+		return exprPostfixRestR(r);
 	}
 	if (consume(DOT))
 	{
 		if (!consume(ID))
-			parseErr("missing field name after `.`");
-		return exprPostfixRest();
+			parseErr("missing field name after `%s`", tokenText(DOT));
+		Token *tkName = last_consumed_tok;
+		if (r->type.base != TB_STRUCT || r->type.sym == NULL)
+			parseErr("a field can only be selected from a struct");
+		Symbol *s = findSymbolInList(r->type.sym->structMembers, tkName->text);
+		if (!s)
+			parseErr("the structure %s does not have a field %s", r->type.sym->name, tkName->text);
+		*r = makeRet(s->type, true, s->type.arrsize >= 0);
+		return exprPostfixRestR(r);
 	}
 	return true;
 }
@@ -761,44 +1010,123 @@ static bool exprPostfixRest()
 */
 bool exprPrimary()
 {
+	Return r;
+	return exprPrimaryR(&r);
+}
+
+static bool exprPrimaryR(Return *r)
+{
 	Token *start = current_tok;
 
 	if (consume(ID))
 	{
+		Token *tkName = last_consumed_tok;
+		Symbol *s = findSymbol(tkName->text);
+		if (!s)
+			parseErr("undefined id: %s", tkName->text);
 		if (consume(L_PARENTHESES))
 		{
-			if (expr())
+			if (s->kind != SK_FN)
+				parseErr("only a function can be called");
+			Symbol *param = s->fn.params;
+			if (!consume(R_PARENTHESES))
 			{
-				while (consume(COMMA))
+				while (true)
 				{
-					if (!expr())
-						parseErr("missing expression after `,` in function call");
+					Return rArg;
+					if (!exprAssignR(&rArg))
+						parseErr("missing expression after `%s` in function call", tokenText(L_PARENTHESES));
+					if (!param)
+						parseErr("too many arguments in function call");
+					if (!canCast(&rArg.type, &param->type))
+						parseErr("in call, cannot convert the argument type to the parameter type");
+					param = param->next;
+					if (consume(COMMA))
+						continue;
+					if (!consume(R_PARENTHESES))
+						parseErr("missing `%s` after function call arguments", tokenText(R_PARENTHESES));
+					break;
 				}
 			}
-			if (!consume(R_PARENTHESES))
-				parseErr("missing `)` after function call arguments");
+			if (param)
+				parseErr("too few arguments in function call");
+			*r = makeRet(s->type, false, true);
+			return true;
 		}
+		if (s->kind == SK_FN)
+			parseErr("a function can only be called");
+		*r = makeRet(s->type, true, s->type.arrsize >= 0);
 		return true;
 	}
 
 	current_tok = start;
-	if (consume(INT) || consume(DOUBLE) || consume(CHAR) || consume(STRING))
+	if (consume(INT))
 	{
+		*r = makeRet((Type){TB_INT, NULL, -1}, false, true);
+		return true;
+	}
+	current_tok = start;
+	if (consume(DOUBLE))
+	{
+		*r = makeRet((Type){TB_DOUBLE, NULL, -1}, false, true);
+		return true;
+	}
+	current_tok = start;
+	if (consume(CHAR))
+	{
+		*r = makeRet((Type){TB_CHAR, NULL, -1}, false, true);
+		return true;
+	}
+	current_tok = start;
+	if (consume(STRING))
+	{
+		*r = makeRet((Type){TB_CHAR, NULL, 0}, false, true);
 		return true;
 	}
 
 	current_tok = start;
 	if (consume(L_PARENTHESES))
 	{
-		if (!expr())
-			parseErr("missing expression after `(`");
+		if (!exprAssignR(r))
+			parseErr("missing expression after `%s`", tokenText(L_PARENTHESES));
 		if (!consume(R_PARENTHESES))
-			parseErr("missing `)`");
+			parseErr("missing `%s` after parenthesized expression", tokenText(R_PARENTHESES));
 		return true;
 	}
 
 	current_tok = start;
 	return false;
+}
+
+static bool exprAssignR(Return *r)
+{
+	Token *start = current_tok;
+	Return left;
+	if (exprUnaryR(&left))
+	{
+		if (consume(ASSIGN))
+		{
+			int op = last_consumed_tok->code;
+			if (!exprAssignR(r))
+				parseErr("missing expression after `%s`", tokenText(op));
+			if (!left.lval)
+				parseErr("the assign destination must be a left-value");
+			if (left.ct)
+				parseErr("the assign destination cannot be constant");
+			if (!canBeScalar(&left))
+				parseErr("the assign destination must be scalar");
+			if (!canBeScalar(r))
+				parseErr("the assign source must be scalar");
+			if (!canCast(&r->type, &left.type))
+				parseErr("the assign source cannot be converted to destination");
+			r->lval = false;
+			r->ct = true;
+			return true;
+		}
+	}
+
+	current_tok = start;
+	return exprOrR(r);
 }
 
 /*
