@@ -2,38 +2,35 @@
 #include "utils.h"
 #include "domain.h"
 
-/**
- * Chain a new instruction to the linked list
- */
-Instruction *addInstruction(Instruction **list, Opcode op)
+Instruction *addInstruction(Instruction **program, Opcode op)
 {
 	Instruction *i = (Instruction *)safeAlloc(sizeof(Instruction));
 	i->op = op;
 	i->next = NULL;
-	if (*list)
+	if (*program)
 	{
-		Instruction *p = *list;
+		Instruction *p = *program;
 		while (p->next)
 			p = p->next;
 		p->next = i;
 	}
 	else
 	{
-		*list = i;
+		*program = i;
 	}
 	return i;
 }
 
-Instruction *addInstructionWithInt(Instruction **list, Opcode op, int argVal)
+Instruction *addInstructionWithInt(Instruction **program, Opcode op, int argVal)
 {
-	Instruction *i = addInstruction(list, op);
+	Instruction *i = addInstruction(program, op);
 	i->arg.i = argVal;
 	return i;
 }
 
-Instruction *addInstructionWithDouble(Instruction **list, Opcode op, double argVal)
+Instruction *addInstructionWithDouble(Instruction **program, Opcode op, double argVal)
 {
-	Instruction *i = addInstruction(list, op);
+	Instruction *i = addInstruction(program, op);
 	i->arg.f = argVal;
 	return i;
 }
@@ -191,24 +188,51 @@ void run(Instruction *IP)
 	}
 }
 
-/* The program implements the following AtomC source code:
+/*
+// The program `genTestProgram` implements the following AtomC source code:
+```
 f(2);
-void f(int n){		// stack frame: n[-2] ret[-1] oldFP[0] i[1]
+void f(int n){		// stack frame: FP[0] = oldFP, FP[-1] = ret_EIP, FP[-2] = n
 	int i=0;
 	while(i<n){
 		put_i(i);
 		i=i+1;
 		}
 	}
+```
+
+Which in our VM implementation should produce the following byte code:
+```
+f:
+	ENTER 1
+	PUSH.i 0
+
+f_loop: 	; stack frame/layout: [TOP][i, oldFP, ret_EIP, n][BOTTOM]
+	FPSTORE -2 ; now the stack layout is: [TOP][n, i, oldFP, ret_EIP, n][BOTTOM]
+	LESS_INT ; compares `TOP > BEFORE_TOP`, which here is: `n > i`
+	JF f_ret ; i >= n, so jump to return
+	PUSH.i i
+	CALL_EXTERNAL put_i
+	PUSH.i 1 ; now the stack layout is [TOP][1, i, n, i, oldFP, ret_EIP, n][BOTTOM]
+	ADD ; adds `TOP + BEFORE_TOP` which here is `1 + i`
+	JMP f_loop
+
+f_ret:
+
+PUSH.i 2
+CALL f
+```
 */
 Instruction *genTestProgram()
 {
 	Instruction *code = NULL;
 	addInstructionWithInt(&code, OP_PUSH_INT, 2);
-	Instruction *callPos = addInstruction(&code, OP_CALL);
+	Instruction *fCall = addInstruction(&code, OP_CALL);
 	addInstruction(&code, OP_HALT);
 
-	callPos->arg.instr = addInstructionWithInt(&code, OP_ENTER, 1);
+	// create an implementation for "f"
+	Instruction *f = addInstructionWithInt(&code, OP_ENTER, 1);
+
 	// int i=0;
 	addInstructionWithInt(&code, OP_PUSH_INT, 0);
 	addInstructionWithInt(&code, OP_FPSTORE, 1);
@@ -232,5 +256,8 @@ Instruction *genTestProgram()
 	addInstruction(&code, OP_JMP)->arg.instr = whilePos;
 	// returns from function
 	jfAfter->arg.instr = addInstructionWithInt(&code, OP_RETURN_VOID, 1);
+
+	fCall->arg.instr = f;
+
 	return code;
 }

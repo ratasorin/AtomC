@@ -28,7 +28,7 @@ typedef enum
 	OP_FPLOAD,			  // OP_fpload [idx] - puts on stack the value from FP[idx]
 	OP_FPSTORE,			  // OP_fpstore [idx] - puts in FP[idx] the value from stack
 	OP_ADD_INT,			  // OP_add.i - adds 2 int values from stack and puts the result on stack
-	OP_LESS_INT			  // OP_less.i - compares 2 int values from stack and puts the result on stack as int
+	OP_LESS_INT			  // OP_less.i - compares: `stack.top() > stack.beforeTop()` and puts the result on stack as int
 } Opcode;
 
 typedef struct Instruction Instruction;
@@ -58,17 +58,30 @@ struct Instruction
 {
 	Opcode op; // opcode: OP_*
 	Argument arg;
-	Instruction *next; // the link to the next instruction in list
+	Instruction *next; // the link to the next instruction in program
 };
 
-// adds a new instruction to the end of list and sets its "op" field
-// returns the newly added instruction
+/**
+ * Chain a new instruction to the program
+ * @param program - A linked list of instructions describing the flow
+ * @param op - The Opcode of the new instruction to be added
+ */
 Instruction *addInstruction(Instruction **list, Opcode op);
 
-// add an instruction which has an argument of type int
+/**
+ * Chain a new instruction (with `int` argument) to the program
+ * @param program - A linked list of instructions decribing the flow
+ * @param op - The Opcode of the new instruction to be added
+ * @param argVal - The `int` argument the function should use
+ */
 Instruction *addInstructionWithInt(Instruction **list, Opcode op, int argVal);
 
-// add an instruction which has an argument of type double
+/**
+ * Chain a new instruction (with `double` argument) to the program
+ * @param program - A linked list of instructions decribing the flow
+ * @param op - The Opcode of the new instruction to be added
+ * @param argVal - The `dobule` argument the function should use
+ */
 Instruction *addInstructionWithDouble(Instruction **list, Opcode op, double argVal);
 
 // MV initialisation
