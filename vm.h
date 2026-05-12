@@ -16,6 +16,7 @@ typedef enum
 {
 	OP_HALT,			  // OP_HALT - ends the code execution
 	OP_PUSH_INT,		  // OP_push.i [const] - puts on stack the constant [const]
+	OP_PUSH_DOUBLE,		  // OP_push.f [const] - puts on stack the double constant [const]
 	OP_CALL,			  // OP_call [instr] - calls a VM function which starts with the given instruction
 	OP_CALL_EXTERNAL,	  // OP_call_ext [native_addr] - calls a host function (machine code) at the given address
 	OP_ENTER,			  // OP_enter [num_locals] - creates a function frame with the given number of local variables
@@ -28,7 +29,9 @@ typedef enum
 	OP_FPLOAD,			  // OP_fpload [idx] - puts on stack the value from FP[idx]
 	OP_FPSTORE,			  // OP_fpstore [idx] - puts in FP[idx] the value from stack
 	OP_ADD_INT,			  // OP_add.i - adds 2 int values from stack and puts the result on stack
-	OP_LESS_INT			  // OP_less.i - compares: `stack.top() > stack.beforeTop()` and puts the result on stack as int
+	OP_ADD_DOUBLE,		  // OP_add.f - adds 2 double values from stack and puts the result on stack
+	OP_LESS_INT,		  // OP_less.i - compares: `stack.top() > stack.beforeTop()` and puts the result on stack as int
+	OP_LESS_DOUBLE		  // OP_less.f - compares: `stack.top() > stack.beforeTop()` and puts the result on stack as int
 } Opcode;
 
 typedef struct Instruction Instruction;
@@ -90,5 +93,8 @@ void vmInit();
 // executes the code starting with the given instruction (IP - Instruction Pointer)
 void run(Instruction *IP);
 
-// generates a test program
-Instruction *genTestProgram();
+// generates the integer test program
+Instruction *p1();
+
+// generates the floating-point test program
+Instruction *p2();

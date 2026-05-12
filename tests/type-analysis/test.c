@@ -14,9 +14,10 @@ void f(char text[], int i, char ch)
 
 int h(int x, int y)
 {
+    double d[100];
     if (x > 0 && x < y)
     {
-        f(v[x].text, y, '#');
+        f(v[x].text, d, '#');
         return 1;
     }
     return 0;

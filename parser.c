@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <stdbool.h>
+#include <string.h>
 #include "domain.h"
 #include "types.h"
 #include "parser.h"
@@ -135,6 +136,40 @@ static const char *tokenText(int code)
 	default:
 		return "token";
 	}
+}
+
+static const char *typeText(Type *t)
+{
+	static char bufs[4][64];
+	static int nextBuf = 0;
+	char *buf = bufs[nextBuf++ % 4];
+
+	switch (t->base)
+	{
+	case TB_INT:
+		snprintf(buf, 64, "int");
+		break;
+	case TB_DOUBLE:
+		snprintf(buf, 64, "double");
+		break;
+	case TB_CHAR:
+		snprintf(buf, 64, "char");
+		break;
+	case TB_VOID:
+		snprintf(buf, 64, "void");
+		break;
+	default:
+		snprintf(buf, 64, "struct %s", t->sym ? t->sym->name : "<anonymous>");
+		break;
+	}
+
+	size_t len = strlen(buf);
+	if (t->arrsize == 0)
+		snprintf(buf + len, 64 - len, "[]");
+	else if (t->arrsize > 0)
+		snprintf(buf + len, 64 - len, "[%d]", t->arrsize);
+
+	return buf;
 }
 
 static void parseErrMissingAfterToken(int missingCode, int afterCode)
@@ -1039,7 +1074,7 @@ static bool exprPrimaryR(Return *r)
 					if (!param)
 						parseErr("too many arguments in function call");
 					if (!canCast(&rArg.type, &param->type))
-						parseErr("in call, cannot convert the argument type to the parameter type");
+						parseErr("in call, cannot convert the argument type `%s` to the parameter type `%s`", typeText(&rArg.type), typeText(&param->type));
 					param = param->next;
 					if (consume(COMMA))
 						continue;
